@@ -186,13 +186,9 @@ elif selected_module == "2. Master Budget (End-to-End)":
             st.success("Sales Budget Generated!")
             
             st.write("### Cash Collection Schedule")
-            
-            # --- THE FIX IS HERE ---
-            # Instead of formatting EVERYTHING, we only format the numbers
             numeric_cols = monthly_rev.select_dtypes(include=['float', 'int']).columns
             format_dict = {col: "${:,.2f}" for col in numeric_cols}
             st.dataframe(monthly_rev.style.format(format_dict))
-            # -----------------------
             
             fig = go.Figure()
             fig.add_trace(go.Bar(x=monthly_rev['Month'], y=monthly_rev['Total_Revenue'], name='Revenue Booked'))
@@ -260,26 +256,77 @@ elif selected_module == "2. Master Budget (End-to-End)":
             st.warning("Complete Step 2 first.")
 
     # ---------------------------------------------------------
-    # STEP 4: LABOR & OVERHEADS
+    # STEP 4: LABOR & OVERHEADS (UPDATED: Product Specific Logic)
     # ---------------------------------------------------------
     with tabs[3]:
-        st.subheader("Step 4: Labor & Overhead Budget")
-        if 'df_production' in st.session_state:
-            c1, c2, c3 = st.columns(3)
-            lab_rate = c1.number_input("Labor Cost per Unit ($)", value=15.0)
-            var_oh = c2.number_input("Variable OH per Unit ($)", value=5.0)
-            fix_oh = c3.number_input("Fixed OH per Month ($)", value=10000.0)
+        st.subheader("Step 4: Direct Labor & Overhead Budget")
+        
+        if 'df_production' not in st.session_state:
+            st.warning("Please complete Step 2 (Production Budget) first.")
+        else:
+            # 1. IDENTIFY UNIQUE PRODUCTS
+            unique_products = st.session_state['df_production']['Product'].unique()
             
-            if st.button("Calculate Conversion Costs"):
+            st.markdown("### A. Labor Rate Card")
+            st.info("Define labor requirements **per product**.")
+            
+            # 2. CREATE A DYNAMIC INPUT TABLE FOR LABOR RATES
+            labor_data = []
+            for p in unique_products:
+                labor_data.append({
+                    "Product": p, 
+                    "Std_Hours_Per_Unit": 2.0, 
+                    "Hourly_Wage_Rate": 15.0
+                })
+            
+            # The user edits this table directly
+            edited_labor_rates = st.data_editor(
+                pd.DataFrame(labor_data),
+                column_config={
+                    "Std_Hours_Per_Unit": st.column_config.NumberColumn("Hours Required per Unit", min_value=0.1, format="%.2f hrs"),
+                    "Hourly_Wage_Rate": st.column_config.NumberColumn("Wage Rate ($/hr)", min_value=0.1, format="$%.2f")
+                },
+                hide_index=True,
+                key="labor_editor"
+            )
+            
+            st.markdown("### B. Overhead Settings")
+            c1, c2 = st.columns(2)
+            var_oh = c1.number_input("Variable OH Rate ($/Unit)", value=5.0)
+            fix_oh = c2.number_input("Total Fixed OH per Month ($)", value=10000.0)
+            
+            # 3. CALCULATE
+            if st.button("Calculate Labor & Overhead"):
+                # Get Production Data
                 df_ops = st.session_state['df_production'].copy()
-                df_ops['Labor_Cost'] = df_ops['Production_Units'] * lab_rate
-                df_ops['OH_Cost'] = (df_ops['Production_Units'] * var_oh) + (fix_oh / len(df_ops['Product'].unique()))
+                
+                # Merge with the User's Labor Rates
+                df_ops = pd.merge(df_ops, edited_labor_rates, on="Product", how="left")
+                
+                # --- LABOR CALCULATION ---
+                # Total Hours = Production * Std Hours
+                df_ops['Total_Labor_Hours'] = df_ops['Production_Units'] * df_ops['Std_Hours_Per_Unit']
+                # Total Cost = Total Hours * Hourly Rate
+                df_ops['Total_Labor_Cost'] = df_ops['Total_Labor_Hours'] * df_ops['Hourly_Wage_Rate']
+                
+                # --- OVERHEAD CALCULATION ---
+                # Variable OH = Production * Rate
+                df_ops['Total_Var_OH'] = df_ops['Production_Units'] * var_oh
+                # Fixed OH Allocation (Simplified: Split fixed cost equally among products/months for display)
+                # In reality, fixed cost is period cost, but for product costing we allocate it.
+                num_records = len(df_ops)
+                df_ops['Allocated_Fixed_OH'] = fix_oh / num_records if num_records > 0 else 0
+                
+                df_ops['Total_OH_Cost'] = df_ops['Total_Var_OH'] + df_ops['Allocated_Fixed_OH']
                 
                 st.session_state['df_ops'] = df_ops
-                st.success("Conversion Costs Calculated!")
-                st.dataframe(df_ops[['Month', 'Product', 'Labor_Cost', 'OH_Cost']])
-        else:
-            st.warning("Complete Step 2 first.")
+                st.success("Labor & Overhead Budget Calculated!")
+                
+                st.write("#### Labor Budget Detail")
+                st.dataframe(df_ops[['Month', 'Product', 'Production_Units', 'Std_Hours_Per_Unit', 'Hourly_Wage_Rate', 'Total_Labor_Cost']].style.format({
+                    "Hourly_Wage_Rate": "${:,.2f}", 
+                    "Total_Labor_Cost": "${:,.2f}"
+                }))
 
     # ---------------------------------------------------------
     # STEP 5: MASTER SUMMARY
@@ -288,15 +335,23 @@ elif selected_module == "2. Master Budget (End-to-End)":
         st.header("Master Budget Summary")
         if all(k in st.session_state for k in ['df_materials', 'df_ops']):
             
+            # Aggregate Material Costs
             mat_sum = st.session_state['df_materials'].groupby(['Month', 'Product'])['Total_Mat_Cost'].sum().reset_index()
-            ops_sum = st.session_state['df_ops'][['Month', 'Product', 'Labor_Cost', 'OH_Cost']]
+            # Aggregate Ops Costs
+            ops_sum = st.session_state['df_ops'][['Month', 'Product', 'Total_Labor_Cost', 'Total_OH_Cost']]
             
             final = pd.merge(mat_sum, ops_sum, on=['Month', 'Product'])
-            final['Total_Production_Cost'] = final['Total_Mat_Cost'] + final['Labor_Cost'] + final['OH_Cost']
+            final['Total_Production_Cost'] = final['Total_Mat_Cost'] + final['Total_Labor_Cost'] + final['Total_OH_Cost']
             
-            st.dataframe(final.style.format({"Total_Mat_Cost":"${:,.2f}", "Labor_Cost":"${:,.2f}", "OH_Cost":"${:,.2f}", "Total_Production_Cost":"${:,.2f}"}))
+            st.write("### Consolidated Cost Sheet")
+            st.dataframe(final.style.format({
+                "Total_Mat_Cost": "${:,.2f}", 
+                "Total_Labor_Cost": "${:,.2f}", 
+                "Total_OH_Cost": "${:,.2f}", 
+                "Total_Production_Cost": "${:,.2f}"
+            }))
             
-            fig = px.bar(final, x="Month", y=["Total_Mat_Cost", "Labor_Cost", "OH_Cost"], title="Cost Structure by Month")
+            fig = px.bar(final, x="Month", y=["Total_Mat_Cost", "Total_Labor_Cost", "Total_OH_Cost"], title="Cost Structure by Month")
             st.plotly_chart(fig, use_container_width=True)
             
         else:
@@ -312,6 +367,5 @@ elif selected_module == "3. ABC Costing":
 elif selected_module == "4. Transfer Pricing":
     st.title("Transfer Pricing")
     st.info("Compare Divisional Profits under Market Price vs Cost.")
-
 
 
