@@ -161,30 +161,13 @@ elif selected_module == "2. Master Budget (End-to-End)":
             df_sales['Total_Revenue'] = df_sales['Sales_Units'] * df_sales['Selling_Price']
             
             # 2. Calc Collections (Dynamic Loop)
-            # Group by Month first (in case multiple products exist per month)
             monthly_rev = df_sales.groupby('Month', sort=False)['Total_Revenue'].sum().reset_index()
             
             # A. Immediate Cash
             monthly_rev['Cash_Inflow_Immediate'] = monthly_rev['Total_Revenue'] * (cash_pct / 100)
             
-            # B. Credit Terms (The Credit Base is the FULL Revenue, we apply lag % to it directly relative to total)
-            # Alternatively: Credit Base = Revenue * (1-Cash%), then apply % of Credit Base.
-            # Based on user UI (inputs sum to 100%), the inputs are likely % of TOTAL Revenue.
-            # Example: 20% Cash, 40% Month 1, 40% Month 2.
-            
+            # B. Dynamic Loop
             total_collected_col = monthly_rev['Cash_Inflow_Immediate'].copy()
-            
-            # Loop through dynamic config
-            credit_base_revenue = monthly_rev['Total_Revenue'] * ((100 - cash_pct)/100)
-            
-            # Note: The user inputs are usually % of the CREDIT portion or % of TOTAL.
-            # Context: "Balance 80% collected equally". 
-            # If user inputs 50% in Month 1, do they mean 50% of Total or 50% of Credit?
-            # Standard UI implies % of the Credit Balance usually. Let's assume % of Credit Balance for precision.
-            
-            # Actually, standard simple budgeting usually does % of Total Revenue.
-            # Let's check the validation logic: "Total = Current Sum". 
-            # Since I sum (Cash + Lag1 + Lag2), I am treating inputs as % of TOTAL Revenue.
             
             for item in credit_config:
                 lag = item['month_lag']
@@ -203,7 +186,13 @@ elif selected_module == "2. Master Budget (End-to-End)":
             st.success("Sales Budget Generated!")
             
             st.write("### Cash Collection Schedule")
-            st.dataframe(monthly_rev.style.format("${:,.2f}"))
+            
+            # --- THE FIX IS HERE ---
+            # Instead of formatting EVERYTHING, we only format the numbers
+            numeric_cols = monthly_rev.select_dtypes(include=['float', 'int']).columns
+            format_dict = {col: "${:,.2f}" for col in numeric_cols}
+            st.dataframe(monthly_rev.style.format(format_dict))
+            # -----------------------
             
             fig = go.Figure()
             fig.add_trace(go.Bar(x=monthly_rev['Month'], y=monthly_rev['Total_Revenue'], name='Revenue Booked'))
@@ -323,9 +312,6 @@ elif selected_module == "3. ABC Costing":
 elif selected_module == "4. Transfer Pricing":
     st.title("Transfer Pricing")
     st.info("Compare Divisional Profits under Market Price vs Cost.")
-
-
-
 
 
 
