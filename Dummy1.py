@@ -95,7 +95,7 @@ elif selected_module == "2. Master Budget (End-to-End)":
     ])
 
     # ---------------------------------------------------------
-    # STEP 1: SALES BUDGET (IMPROVED COLLECTION LOGIC)
+    # STEP 1: SALES BUDGET (DYNAMIC LAG LOGIC)
     # ---------------------------------------------------------
     with tabs[0]:
         st.subheader("Step 1: Sales Forecast & Collections")
@@ -103,40 +103,55 @@ elif selected_module == "2. Master Budget (End-to-End)":
         c1, c2 = st.columns([1, 2])
         with c1:
             st.markdown("#### A. Upload Forecast")
-            # Template: Simple Forecast
             template_sales = pd.DataFrame({
-                "Month": ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
-                "Product": ["Widget A", "Widget A", "Widget A", "Widget A", "Widget A", "Widget A"],
-                "Sales_Units": [1000, 1200, 1500, 1300, 1600, 1800],
-                "Selling_Price": [50, 50, 55, 55, 60, 60]
+                "Month": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"],
+                "Product": ["Widget A"] * 8,
+                "Sales_Units": [1000, 1200, 1500, 1300, 1600, 1800, 2000, 2200],
+                "Selling_Price": [50] * 8
             })
             provide_template(template_sales, "sales_forecast_template")
             uploaded_sales = st.file_uploader("Upload Sales Forecast", key="sales_up")
 
         with c2:
-            st.markdown("#### B. Collection Logic (Inputs)")
-            st.info("Define EXACTLY when you receive the money.")
+            st.markdown("#### B. Collection Logic")
+            st.info("Define how you collect money.")
             
-            # 1. Cash Sales
+            # 1. Immediate Cash Input
             cash_pct = st.slider("% Cash Sales (Immediate)", 0, 100, 20)
-            st.write(f"**Credit Sales Balance:** {100 - cash_pct}%")
+            st.write(f"**Credit Balance to Collect:** {100 - cash_pct}%")
             
-            st.markdown("---")
-            st.markdown("**Credit Collection Cycle (Of the Credit Balance)**")
+            # 2. Dynamic Credit Terms (Pop-up Logic)
+            credit_config = [] # Will store dictionaries like {'lag': 1, 'pct': 50}
             
-            col_l1, col_l2, col_l3 = st.columns(3)
-            
-            # Explicit Inputs for 3 Months
-            lag1 = col_l1.number_input("% Collected 1 Month Later", 0, 100, 50)
-            lag2 = col_l2.number_input("% Collected 2 Months Later", 0, 100, 30)
-            lag3 = col_l3.number_input("% Collected 3 Months Later", 0, 100, 20)
-            
-            # Validation Check
-            total_collected = lag1 + lag2 + lag3
-            if total_collected < 100:
-                st.warning(f"⚠️ Warning: You are only collecting {total_collected}% of your debts. {100 - total_collected}% is Uncollected/Bad Debt.")
-            elif total_collected > 100:
-                st.error(f"⛔ Error: Your percentages sum to {total_collected}%. They cannot exceed 100%.")
+            if cash_pct < 100:
+                st.markdown("---")
+                st.markdown("**Credit Collection Schedule**")
+                
+                # Initialize Session State for Number of Lags
+                if 'num_lags' not in st.session_state:
+                    st.session_state['num_lags'] = 1
+                
+                # Buttons to Add/Remove Months
+                col_btn1, col_btn2 = st.columns([1, 1])
+                if col_btn1.button("➕ Add Month"):
+                    st.session_state['num_lags'] += 1
+                if col_btn2.button("➖ Remove") and st.session_state['num_lags'] > 1:
+                    st.session_state['num_lags'] -= 1
+
+                # Render Dynamic Inputs
+                current_sum = cash_pct
+                for i in range(1, st.session_state['num_lags'] + 1):
+                    val = st.number_input(f"% Collected {i} Month(s) Later", min_value=0, max_value=100, value=0, key=f"lag_input_{i}")
+                    credit_config.append({'month_lag': i, 'pct': val})
+                    current_sum += val
+                
+                # Validation
+                if current_sum < 100:
+                    st.warning(f"⚠️ Total = {current_sum}%. You have {100 - current_sum}% Uncollected (Bad Debt).")
+                elif current_sum > 100:
+                    st.error(f"⛔ Total = {current_sum}%. Total cannot exceed 100%.")
+                else:
+                    st.success("✅ Total allocation is 100%.")
 
         if uploaded_sales:
             df_sales = pd.read_csv(uploaded_sales) if uploaded_sales.name.endswith('.csv') else pd.read_excel(uploaded_sales)
@@ -145,35 +160,50 @@ elif selected_module == "2. Master Budget (End-to-End)":
             # 1. Calc Revenue
             df_sales['Total_Revenue'] = df_sales['Sales_Units'] * df_sales['Selling_Price']
             
-            # 2. Calc Collections (Cash Flow)
+            # 2. Calc Collections (Dynamic Loop)
+            # Group by Month first (in case multiple products exist per month)
             monthly_rev = df_sales.groupby('Month', sort=False)['Total_Revenue'].sum().reset_index()
             
-            # Calculate the explicit amounts
-            # Cash Portion
+            # A. Immediate Cash
             monthly_rev['Cash_Inflow_Immediate'] = monthly_rev['Total_Revenue'] * (cash_pct / 100)
             
-            # Credit Portion Base
-            credit_base = monthly_rev['Total_Revenue'] * ((100 - cash_pct) / 100)
+            # B. Credit Terms (The Credit Base is the FULL Revenue, we apply lag % to it directly relative to total)
+            # Alternatively: Credit Base = Revenue * (1-Cash%), then apply % of Credit Base.
+            # Based on user UI (inputs sum to 100%), the inputs are likely % of TOTAL Revenue.
+            # Example: 20% Cash, 40% Month 1, 40% Month 2.
             
-            # Apply Lags (Shift)
-            monthly_rev['Collection_M1'] = credit_base.shift(1).fillna(0) * (lag1 / 100)
-            monthly_rev['Collection_M2'] = credit_base.shift(2).fillna(0) * (lag2 / 100)
-            monthly_rev['Collection_M3'] = credit_base.shift(3).fillna(0) * (lag3 / 100)
+            total_collected_col = monthly_rev['Cash_Inflow_Immediate'].copy()
             
-            monthly_rev['Total_Cash_Collected'] = (monthly_rev['Cash_Inflow_Immediate'] + 
-                                                   monthly_rev['Collection_M1'] + 
-                                                   monthly_rev['Collection_M2'] + 
-                                                   monthly_rev['Collection_M3'])
+            # Loop through dynamic config
+            credit_base_revenue = monthly_rev['Total_Revenue'] * ((100 - cash_pct)/100)
+            
+            # Note: The user inputs are usually % of the CREDIT portion or % of TOTAL.
+            # Context: "Balance 80% collected equally". 
+            # If user inputs 50% in Month 1, do they mean 50% of Total or 50% of Credit?
+            # Standard UI implies % of the Credit Balance usually. Let's assume % of Credit Balance for precision.
+            
+            # Actually, standard simple budgeting usually does % of Total Revenue.
+            # Let's check the validation logic: "Total = Current Sum". 
+            # Since I sum (Cash + Lag1 + Lag2), I am treating inputs as % of TOTAL Revenue.
+            
+            for item in credit_config:
+                lag = item['month_lag']
+                pct = item['pct']
+                col_name = f"Collection_M{lag}"
+                
+                # Shift Revenue by Lag Months * Percent
+                monthly_rev[col_name] = monthly_rev['Total_Revenue'].shift(lag).fillna(0) * (pct / 100)
+                total_collected_col += monthly_rev[col_name]
+            
+            monthly_rev['Total_Cash_Collected'] = total_collected_col
             
             st.session_state['df_sales'] = df_sales
             st.session_state['df_collections'] = monthly_rev
             
             st.success("Sales Budget Generated!")
             
-            st.write("### Revenue vs. Cash Collection Schedule")
-            # Format for display
-            display_cols = ['Month', 'Total_Revenue', 'Cash_Inflow_Immediate', 'Collection_M1', 'Collection_M2', 'Collection_M3', 'Total_Cash_Collected']
-            st.dataframe(monthly_rev[display_cols].style.format("${:,.2f}"))
+            st.write("### Cash Collection Schedule")
+            st.dataframe(monthly_rev.style.format("${:,.2f}"))
             
             fig = go.Figure()
             fig.add_trace(go.Bar(x=monthly_rev['Month'], y=monthly_rev['Total_Revenue'], name='Revenue Booked'))
@@ -191,12 +221,11 @@ elif selected_module == "2. Master Budget (End-to-End)":
         else:
             st.write("Sales Units fetched from Step 1. Please upload Inventory Targets.")
             
-            # Template: Inventory Only
             template_inv = pd.DataFrame({
-                "Month": ["Jan", "Feb", "Mar", "Apr", "May", "Jun"],
-                "Product": ["Widget A", "Widget A", "Widget A", "Widget A", "Widget A", "Widget A"],
-                "Opening_Stock": [100, 150, 200, 220, 250, 270],
-                "Desired_Closing": [150, 200, 220, 250, 270, 300]
+                "Month": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"],
+                "Product": ["Widget A"] * 8,
+                "Opening_Stock": [100, 150, 200, 220, 250, 270, 290, 310],
+                "Desired_Closing": [150, 200, 220, 250, 270, 290, 310, 330]
             })
             c1, c2 = st.columns([1, 2])
             with c1: provide_template(template_inv, "inventory_targets")
@@ -206,11 +235,7 @@ elif selected_module == "2. Master Budget (End-to-End)":
                 df_inv = pd.read_csv(uploaded_inv) if uploaded_inv.name.endswith('.csv') else pd.read_excel(uploaded_inv)
                 df_inv = clean_currency_columns(df_inv, ['Opening_Stock', 'Desired_Closing'])
                 
-                # Merge Sales (Step 1) + Inventory (Step 2)
-                # Merging on Month AND Product
                 df_prod = pd.merge(st.session_state['df_sales'], df_inv, on=['Month', 'Product'], how='left')
-                
-                # Production = Sales + Closing - Opening
                 df_prod['Production_Units'] = df_prod['Sales_Units'] + df_prod['Desired_Closing'] - df_prod['Opening_Stock']
                 
                 st.session_state['df_production'] = df_prod
@@ -225,9 +250,7 @@ elif selected_module == "2. Master Budget (End-to-End)":
         if 'df_production' in st.session_state:
             st.info("Define Bill of Materials (BOM) to calculate raw material needs.")
             
-            # BOM Editor
             prods = st.session_state['df_production']['Product'].unique()
-            # Default data logic to prevent empty list error
             bom_data = []
             if len(prods) > 0:
                 bom_data = [{"Product": p, "Material": "Steel", "Qty_Per_Unit": 2, "Cost_Per_Mat": 10} for p in prods]
@@ -276,7 +299,6 @@ elif selected_module == "2. Master Budget (End-to-End)":
         st.header("Master Budget Summary")
         if all(k in st.session_state for k in ['df_materials', 'df_ops']):
             
-            # Aggregate Material Costs
             mat_sum = st.session_state['df_materials'].groupby(['Month', 'Product'])['Total_Mat_Cost'].sum().reset_index()
             ops_sum = st.session_state['df_ops'][['Month', 'Product', 'Labor_Cost', 'OH_Cost']]
             
@@ -301,3 +323,9 @@ elif selected_module == "3. ABC Costing":
 elif selected_module == "4. Transfer Pricing":
     st.title("Transfer Pricing")
     st.info("Compare Divisional Profits under Market Price vs Cost.")
+
+
+
+
+
+
