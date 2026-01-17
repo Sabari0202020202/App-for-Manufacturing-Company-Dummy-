@@ -58,6 +58,7 @@ elif selected_module == "2. Master Budgeting (Complete)":
     tab1, tab2, tab3 = st.tabs(["1. Data Input", "2. Policy Control Center", "3. Master Cash Budget"])
     
     # --- TAB 1: EXTENDED DATA INPUT ---
+    # --- TAB 1: EXTENDED DATA INPUT ---
     with tab1:
         st.subheader("Monthly Financial Forecast")
         st.write("Please upload the raw figures for Sales, Purchases, and Expenses for the budget period.")
@@ -81,9 +82,25 @@ elif selected_module == "2. Master Budgeting (Complete)":
         opening_cash = col_bal[0].number_input("Opening Cash Balance ($)", value=10000)
         
         if uploaded_budget:
-            st.session_state['budget_full_df'] = pd.read_csv(uploaded_budget) if uploaded_budget.name.endswith('.csv') else pd.read_excel(uploaded_budget)
-            st.success("Data Loaded. Go to 'Policy Control Center'.")
-
+            # 1. Load Data
+            df = pd.read_csv(uploaded_budget) if uploaded_budget.name.endswith('.csv') else pd.read_excel(uploaded_budget)
+            
+            # 2. SANITIZE DATA (The Fix)
+            # This loop converts text like "10,000" into number 10000.0
+            numeric_cols = ['Sales_Revenue', 'Material_Purchases', 'Wages', 
+                           'Mfg_Overheads', 'Admin_Selling_Exp', 'Tax_Paid', 'Capital_Expenditure']
+            
+            for col in numeric_cols:
+                # If the column exists, force it to be a number
+                if col in df.columns:
+                    # Remove '$' and ',' if they exist
+                    if df[col].dtype == 'object':
+                        df[col] = df[col].astype(str).str.replace(r'[$,]', '', regex=True)
+                    # Convert to number, turn errors (text) into 0
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            st.session_state['budget_full_df'] = df
+            st.success("Data Loaded and Cleaned. Go to 'Policy Control Center'.")
     # --- TAB 2: POLICY CONTROL CENTER (THE BRAIN) ---
     with tab2:
         st.header("Financial Policy Configuration")
